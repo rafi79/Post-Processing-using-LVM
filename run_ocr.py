@@ -22,7 +22,7 @@ if __name__ == "__main__":
     
     # Run the application with special flags
     bootstrap.run(
-        "advanced_ocr_app.py",  # The main application file
+        "streamlit_app.py",  # The main application file
         "",  # Command line arguments (empty)
         [],  # Script args
         flag_options={

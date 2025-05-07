@@ -8,7 +8,7 @@ import pandas as pd
 import os
 import tempfile
 import time
-import base64
+import matplotlib.pyplot as plt
 from transformers import (
     TrOCRProcessor,
     VisionEncoderDecoderModel,
@@ -18,8 +18,6 @@ from transformers import (
 )
 import re
 from difflib import SequenceMatcher
-import matplotlib.pyplot as plt
-import io
 
 # Set page configuration
 st.set_page_config(
@@ -137,113 +135,9 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# Helper functions for image processing
-def add_logo_to_sidebar():
-    st.sidebar.markdown("""
-    <div style="text-align: center; margin-bottom: 20px;">
-        <h1 style="color: #1E88E5;">OCR System</h1>
-        <p style="color: #424242;">Powered by AI</p>
-    </div>
-    """, unsafe_allow_html=True)
-
-def preprocess_image(image):
-    """Apply advanced preprocessing techniques to the image"""
-    # Convert to CV2 format
-    image_cv2 = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
-    
-    # Convert to grayscale
-    gray_image = cv2.cvtColor(image_cv2, cv2.COLOR_BGR2GRAY)
-    
-    # Apply adaptive thresholding to handle varying illumination
-    thresh = cv2.adaptiveThreshold(
-        gray_image, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
-        cv2.THRESH_BINARY, 11, 2
-    )
-    
-    # Apply deblurring with unsharp masking
-    gaussian = cv2.GaussianBlur(thresh, (0, 0), 3)
-    deblurred = cv2.addWeighted(thresh, 1.8, gaussian, -0.8, 0)
-    
-    # Apply sharpening
-    kernel = np.array([[-1,-1,-1], [-1,9,-1], [-1,-1,-1]])
-    sharpened = cv2.filter2D(deblurred, -1, kernel)
-    
-    # Denoise using non-local means
-    denoised = cv2.fastNlMeansDenoising(sharpened, None, 10, 7, 21)
-    
-    # Convert back to PIL and RGB
-    pil_image = Image.fromarray(denoised)
-    rgb_image = Image.merge('RGB', [pil_image, pil_image, pil_image])
-    
-    return rgb_image, denoised  # Return both processed PIL image and CV2 image for display
-
-def normalize_text(text):
-    """Normalize text for soft matching"""
-    # Convert to lowercase
-    text = text.lower()
-    # Remove punctuation
-    text = re.sub(r'[^\w\s]', '', text)
-    # Normalize whitespace
-    text = ' '.join(text.split())
-    return text
-
-def create_preprocessing_visualization(original_img, processed_img):
-    """Create visualization of preprocessing steps"""
-    fig, axes = plt.subplots(1, 2, figsize=(12, 6))
-    
-    # Original image
-    axes[0].imshow(original_img, cmap='gray')
-    axes[0].set_title("Original Image")
-    axes[0].axis('off')
-    
-    # Processed image
-    axes[1].imshow(processed_img, cmap='gray')
-    axes[1].set_title("Processed Image")
-    axes[1].axis('off')
-    
-    fig.tight_layout()
-    return fig
-
-def display_confidence_visualization(similarity):
-    """Create a visualization for the confidence score"""
-    fig, ax = plt.subplots(figsize=(10, 2))
-    
-    # Create a horizontal bar chart
-    bar_colors = ['#f44336', '#ff9800', '#ffeb3b', '#4caf50']
-    color_idx = min(int(similarity * 4), 3)  # Map to 0-3 index
-    
-    ax.barh(['Confidence'], [similarity], color=bar_colors[color_idx])
-    ax.barh([''], [1-similarity], left=[similarity], color='#f5f5f5')
-    
-    # Add a vertical line at common thresholds
-    ax.axvline(x=0.85, color='black', linestyle='--', alpha=0.5)
-    
-    # Add text labels
-    for x, label in [(0.2, 'Low'), (0.5, 'Medium'), (0.85, 'High')]:
-        ax.text(x, 0, label, ha='center', va='center', fontsize=10, color='black')
-    
-    # Add the value as text
-    ax.text(similarity, 0, f'{similarity:.2f}', ha='center', va='center', 
-            fontsize=12, fontweight='bold', color='white' if similarity > 0.5 else 'black')
-    
-    # Configure the axes
-    ax.set_xlim(0, 1.0)
-    ax.set_ylim(-0.5, 0.5)
-    ax.set_xlabel('Confidence Score')
-    ax.get_yaxis().set_visible(False)
-    ax.spines['right'].set_visible(False)
-    ax.spines['left'].set_visible(False)
-    ax.spines['top'].set_visible(False)
-    
-    fig.tight_layout()
-    return fig
-
 class OCRSystem:
     def __init__(self, hf_token=None):
         """Initialize the OCR system"""
-        # Add a placeholder for progress
-        self.progress_placeholder = st.empty()
-        
         # Initialize device
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.hf_token = hf_token
@@ -251,6 +145,9 @@ class OCRSystem:
         # Initialize model flags
         self.trocr_initialized = False
         self.pali_initialized = False
+        
+        # Progress placeholder
+        self.progress_placeholder = st.empty()
     
     def init_trocr(self):
         """Initialize TrOCR model"""
@@ -285,7 +182,7 @@ class OCRSystem:
                 st.error(f"Error loading TrOCR model: {e}")
     
     def init_pali(self):
-        """Initialize PaLI-Gemma model (optional)"""
+        """Initialize PaLI-Gemma model"""
         if not self.hf_token:
             st.warning("No Hugging Face token provided. Skipping PaLI-Gemma initialization.")
             return
@@ -317,183 +214,266 @@ class OCRSystem:
             except Exception as e:
                 st.error(f"Error loading PaLI-Gemma model: {e}")
     
+    def preprocess_image(self, image):
+        """Apply advanced preprocessing techniques to the image"""
+        # Convert to CV2 format
+        image_cv2 = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
+        
+        # Convert to grayscale
+        gray_image = cv2.cvtColor(image_cv2, cv2.COLOR_BGR2GRAY)
+        
+        # Apply adaptive thresholding to handle varying illumination
+        thresh = cv2.adaptiveThreshold(
+            gray_image, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+            cv2.THRESH_BINARY, 11, 2
+        )
+        
+        # Apply deblurring with unsharp masking
+        gaussian = cv2.GaussianBlur(thresh, (0, 0), 3)
+        deblurred = cv2.addWeighted(thresh, 1.8, gaussian, -0.8, 0)
+        
+        # Apply sharpening
+        kernel = np.array([[-1,-1,-1], [-1,9,-1], [-1,-1,-1]])
+        sharpened = cv2.filter2D(deblurred, -1, kernel)
+        
+        # Denoise using non-local means
+        denoised = cv2.fastNlMeansDenoising(sharpened, None, 10, 7, 21)
+        
+        # Convert back to PIL and RGB
+        pil_image = Image.fromarray(denoised)
+        rgb_image = Image.merge('RGB', [pil_image, pil_image, pil_image])
+        
+        return rgb_image, denoised  # Return both processed PIL image and CV2 image for display
+    
+    def normalize_text(self, text):
+        """Normalize text for soft matching"""
+        # Convert to lowercase
+        text = text.lower()
+        # Remove punctuation
+        text = re.sub(r'[^\w\s]', '', text)
+        # Normalize whitespace
+        text = ' '.join(text.split())
+        return text
+    
+    def calculate_similarity(self, text1, text2):
+        """Calculate similarity between two texts"""
+        norm_text1 = self.normalize_text(text1)
+        norm_text2 = self.normalize_text(text2)
+        return SequenceMatcher(None, norm_text1, norm_text2).ratio()
+    
+    def trocr_predict(self, image):
+        """Use TrOCR to predict text in the image"""
+        if not self.trocr_initialized:
+            self.init_trocr()
+        
+        with st.spinner("Performing OCR with TrOCR..."):
+            try:
+                pixel_values = self.trocr_processor(images=image, return_tensors="pt").pixel_values.to(self.device)
+                
+                with torch.no_grad(), autocast(enabled=self.device.type == 'cuda'):
+                    generated_ids = self.trocr_model.generate(pixel_values)
+                    predicted_text = self.trocr_processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
+                
+                return predicted_text
+            except Exception as e:
+                st.error(f"Error during TrOCR prediction: {e}")
+                return "Error during OCR analysis"
+    
+    def pali_refine(self, image, initial_pred):
+        """Refine the prediction using PaLI-Gemma"""
+        if not self.pali_initialized:
+            self.init_pali()
+        
+        if not self.pali_initialized:
+            return initial_pred  # Return the initial prediction if PaLI-Gemma is not available
+        
+        with st.spinner("Refining OCR result with PaLI-Gemma..."):
+            try:
+                # Explicitly add the <image> token to the beginning of the prompt
+                prompt = f"<image> OCR correction task: The text in this image appears to be '{initial_pred}'. What is the correct text?"
+                
+                # Process the inputs with the processor
+                inputs = self.pali_processor(
+                    images=image,
+                    text=prompt,
+                    return_tensors="pt",
+                    padding="max_length",
+                    truncation=True,
+                    max_length=512
+                ).to(self.device)
+                
+                # Set generation parameters
+                generation_config = {
+                    "max_new_tokens": 256,
+                    "temperature": 0.2,  # Lower temperature for more deterministic outputs
+                    "do_sample": True,
+                    "top_p": 0.92,
+                    "top_k": 50,
+                    "repetition_penalty": 1.2,  # Penalize repetition more
+                    "length_penalty": 1.0,
+                    "no_repeat_ngram_size": 3
+                }
+                
+                with torch.no_grad():
+                    outputs = self.pali_model.generate(**inputs, **generation_config)
+                
+                # Decode and extract the refined text
+                refined_text = self.pali_tokenizer.decode(outputs[0], skip_special_tokens=True)
+                
+                # Extract just the corrected text using regex pattern matching
+                match = re.search(r'correct text is[:\s]*[\"\']*([^\"\']*)[\"\']*', refined_text, re.IGNORECASE)
+                if match:
+                    extracted_text = match.group(1).strip()
+                    return extracted_text
+                
+                # If specific pattern not found, try to clean up the output
+                # Remove the prompt and any other explanatory text
+                refined_text = refined_text.replace(prompt, "").strip()
+                
+                # Look for the actual text which often comes after a colon or quotes
+                match = re.search(r'[:\"]([^:\"]+)[\"]*$', refined_text)
+                if match:
+                    return match.group(1).strip()
+                    
+                return refined_text
+            except Exception as e:
+                st.error(f"Error during PaLI-Gemma refinement: {e}")
+                return initial_pred
+    
     def process_image(self, image):
         """Process a single image through the full pipeline"""
         results = {}
         
         # Preprocess image
-        processed_image, cv2_processed = preprocess_image(image)
+        processed_image, cv2_processed = self.preprocess_image(image)
         results['processed_image'] = processed_image
         results['cv2_processed'] = cv2_processed
         
         # Create visualization of preprocessing
-        results['preprocessing_viz'] = create_preprocessing_visualization(np.array(image), cv2_processed)
+        results['preprocessing_viz'] = self.create_preprocessing_visualization(np.array(image), cv2_processed)
         
-        # Only proceed if TrOCR is initialized
-        if not self.trocr_initialized:
-            with self.progress_placeholder.container():
-                self.init_trocr()
+        # TrOCR prediction
+        initial_pred = self.trocr_predict(processed_image)
+        results['initial_prediction'] = initial_pred
         
-        # Initial TrOCR prediction
-        with self.progress_placeholder.container():
-            st.info("Performing OCR analysis...")
-            progress_bar = st.progress(0)
-            
-            # Simulate processing time
-            for i in range(100):
-                progress_bar.progress(i + 1)
-                time.sleep(0.01)
-            
-            try:
-                pixel_values = self.trocr_processor(images=processed_image, return_tensors="pt").pixel_values.to(self.device)
-                
-                with torch.no_grad(), autocast(enabled=self.device.type == 'cuda'):
-                    generated_ids = self.trocr_model.generate(pixel_values)
-                    initial_pred = self.trocr_processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
-                
-                results['initial_prediction'] = initial_pred
-                st.success("OCR analysis complete!")
-            except Exception as e:
-                st.error(f"Error during OCR analysis: {e}")
-                results['initial_prediction'] = "Error during analysis"
-                return results
+        # PaLI-Gemma refinement
+        refined_pred = self.pali_refine(processed_image, initial_pred)
+        results['refined_prediction'] = refined_pred
         
-        # Refined prediction with PaLI-Gemma (if initialized)
-        if self.pali_initialized:
-            with self.progress_placeholder.container():
-                st.info("Refining OCR results using PaLI-Gemma...")
-                progress_bar = st.progress(0)
-                
-                # Simulate processing time
-                for i in range(100):
-                    progress_bar.progress(i + 1)
-                    time.sleep(0.02)
-                
-                try:
-                    refined_pred = self.refine_prediction(processed_image, initial_pred)
-                    results['refined_prediction'] = refined_pred
-                    
-                    # Calculate similarity for confidence visualization
-                    similarity = SequenceMatcher(None, 
-                                               normalize_text(initial_pred), 
-                                               normalize_text(refined_pred)).ratio()
-                    results['confidence_viz'] = display_confidence_visualization(similarity)
-                    results['confidence_score'] = similarity
-                    
-                    st.success("Refinement complete!")
-                except Exception as e:
-                    st.error(f"Error during refinement: {e}")
-                    results['refined_prediction'] = initial_pred  # Fallback to initial prediction
-        else:
-            results['refined_prediction'] = initial_pred  # No refinement available
+        # Calculate similarity for confidence visualization
+        similarity = self.calculate_similarity(initial_pred, refined_pred)
+        results['confidence_viz'] = self.display_confidence_visualization(similarity)
+        results['confidence_score'] = similarity
         
         return results
     
-    def refine_prediction(self, image, initial_pred):
-        """Refine the prediction using PaLI-Gemma with proper token formatting"""
-        try:
-            # Explicitly add the <image> token to the beginning of the prompt
-            prompt = f"<image> OCR correction task: The text in this image appears to be '{initial_pred}'. What is the correct text?"
-            
-            # Process the inputs with the processor
-            inputs = self.pali_processor(
-                images=image,
-                text=prompt,
-                return_tensors="pt",
-                padding="max_length",
-                truncation=True,
-                max_length=512
-            ).to(self.device)
-            
-            # Set generation parameters
-            generation_config = {
-                "max_new_tokens": 256,
-                "temperature": 0.2,
-                "do_sample": True,
-                "top_p": 0.92,
-                "top_k": 50,
-                "repetition_penalty": 1.2,
-                "length_penalty": 1.0,
-                "no_repeat_ngram_size": 3
-            }
-            
-            with torch.no_grad():
-                outputs = self.pali_model.generate(**inputs, **generation_config)
-            
-            # Decode and extract the refined text
-            refined_text = self.pali_tokenizer.decode(outputs[0], skip_special_tokens=True)
-            
-            # Extract just the corrected text using regex pattern matching
-            match = re.search(r'correct text is[:\s]*[\"\']*([^\"\']*)[\"\']*', refined_text, re.IGNORECASE)
-            if match:
-                extracted_text = match.group(1).strip()
-                return extracted_text
-            
-            # If specific pattern not found, try to clean up the output
-            refined_text = refined_text.replace(prompt, "").strip()
-            
-            # Look for the actual text which often comes after a colon or quotes
-            match = re.search(r'[:\"]([^:\"]+)[\"]*$', refined_text)
-            if match:
-                return match.group(1).strip()
-                
-            return refined_text
-        except Exception as e:
-            st.error(f"Refinement failed: {e}")
-            return initial_pred
+    def create_preprocessing_visualization(self, original_img, processed_img):
+        """Create visualization of preprocessing steps"""
+        fig, axes = plt.subplots(1, 2, figsize=(12, 6))
+        
+        # Original image
+        axes[0].imshow(original_img, cmap='gray')
+        axes[0].set_title("Original Image")
+        axes[0].axis('off')
+        
+        # Processed image
+        axes[1].imshow(processed_img, cmap='gray')
+        axes[1].set_title("Processed Image")
+        axes[1].axis('off')
+        
+        fig.tight_layout()
+        return fig
+    
+    def display_confidence_visualization(self, similarity):
+        """Create a visualization for the confidence score"""
+        fig, ax = plt.subplots(figsize=(10, 2))
+        
+        # Create a horizontal bar chart
+        bar_colors = ['#f44336', '#ff9800', '#ffeb3b', '#4caf50']
+        color_idx = min(int(similarity * 4), 3)  # Map to 0-3 index
+        
+        ax.barh(['Confidence'], [similarity], color=bar_colors[color_idx])
+        ax.barh([''], [1-similarity], left=[similarity], color='#f5f5f5')
+        
+        # Add a vertical line at common thresholds
+        ax.axvline(x=0.85, color='black', linestyle='--', alpha=0.5)
+        
+        # Add text labels
+        for x, label in [(0.2, 'Low'), (0.5, 'Medium'), (0.85, 'High')]:
+            ax.text(x, 0, label, ha='center', va='center', fontsize=10, color='black')
+        
+        # Add the value as text
+        ax.text(similarity, 0, f'{similarity:.2f}', ha='center', va='center', 
+                fontsize=12, fontweight='bold', color='white' if similarity > 0.5 else 'black')
+        
+        # Configure the axes
+        ax.set_xlim(0, 1.0)
+        ax.set_ylim(-0.5, 0.5)
+        ax.set_xlabel('Confidence Score')
+        ax.get_yaxis().set_visible(False)
+        ax.spines['right'].set_visible(False)
+        ax.spines['left'].set_visible(False)
+        ax.spines['top'].set_visible(False)
+        
+        fig.tight_layout()
+        return fig
 
-def load_demo_image():
-    """Load a demo image for testing"""
-    # You can replace this with an actual included demo image
-    demo_img = Image.new('RGB', (400, 100), color = (73, 109, 137))
-    d = ImageDraw.Draw(demo_img)
-    d.text((10,10), "Sample Text for OCR Demo", fill=(255,255,0))
-    return demo_img
+def add_sidebar():
+    """Add sidebar elements"""
+    st.sidebar.markdown("""
+    <div style="text-align: center; margin-bottom: 20px;">
+        <h1 style="color: #1E88E5;">OCR System</h1>
+        <p style="color: #424242;">Powered by AI</p>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    st.sidebar.markdown("<div class='sub-header'>Settings</div>", unsafe_allow_html=True)
+    
+    # Hugging Face token input
+    hf_token = st.sidebar.text_input("Hugging Face Token", 
+                                   value="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",
+                                   type="password",
+                                   help="Token for accessing Hugging Face models")
+    
+    # Use PaLI checkbox
+    use_pali = st.sidebar.checkbox("Use PaLI-Gemma for refinement", 
+                                  value=True,
+                                  help="Enable to use PaLI-Gemma model for refining OCR results")
+    
+    # Display options
+    st.sidebar.markdown("<div class='sub-header'>Display Options</div>", unsafe_allow_html=True)
+    show_preprocessing = st.sidebar.checkbox("Show preprocessing visualization", value=True)
+    show_confidence = st.sidebar.checkbox("Show confidence visualization", value=True)
+    
+    return hf_token if use_pali else None, show_preprocessing, show_confidence
 
 def main():
-    # Add logo to sidebar
-    add_logo_to_sidebar()
-    
-    # Main header
     st.markdown("<h1 class='main-header'>Advanced OCR System</h1>", unsafe_allow_html=True)
     st.markdown("<p style='text-align: center; margin-bottom: 30px;'>Extract and enhance text from images with AI</p>", unsafe_allow_html=True)
     
-    # Sidebar
-    st.sidebar.markdown("<div class='sub-header'>Settings</div>", unsafe_allow_html=True)
+    # Add sidebar
+    add_sidebar()
     
-    # Initialize session state
+    # Initialize OCR system if not in session state
     if 'ocr_system' not in st.session_state:
-        hf_token = st.sidebar.text_input("Hugging Face Token (for PaLI-Gemma)", 
-                                        type="password", 
-                                        value="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",
-                                        help="Token for accessing Hugging Face models. Required for PaLI-Gemma refinement.")
-        
-        use_pali = st.sidebar.checkbox("Use PaLI-Gemma for refinement", 
-                                       value=True,
-                                       help="Enable to use PaLI-Gemma model for refining OCR results. Requires a Hugging Face token.")
-        
-        # Create OCR system
-        st.session_state.ocr_system = OCRSystem(hf_token if use_pali else None)
-        
-        # UI options
-        st.sidebar.markdown("<div class='sub-header'>Display Options</div>", unsafe_allow_html=True)
-        st.session_state.show_preprocessing = st.sidebar.checkbox("Show preprocessing visualization", value=True)
-        st.session_state.show_confidence = st.sidebar.checkbox("Show confidence visualization", value=True)
+        hf_token, _, _ = add_sidebar()
+        st.session_state.ocr_system = OCRSystem(hf_token)
     
-    # Add a refresh button to sidebar
+    # Get display options from sidebar
+    _, show_preprocessing, show_confidence = add_sidebar()
+    
+    # Reload models button
     if st.sidebar.button("Reload Models"):
-        # Clear session state
+        # Clear session state and rerun
         st.session_state.pop('ocr_system', None)
         st.experimental_rerun()
     
-    # Input options
-    st.markdown("<div class='sub-header'>Image Input</div>", unsafe_allow_html=True)
-    
-    # Create tabs for different input methods
+    # Create tabs
     tab1, tab2, tab3 = st.tabs(["Upload Image", "Take Photo", "Batch Processing"])
     
     with tab1:
-        uploaded_file = st.file_uploader("Upload an image containing text", type=["jpg", "jpeg", "png", "bmp"])
+        st.markdown("<div class='info-box'>Upload an image containing text to process.</div>", unsafe_allow_html=True)
+        uploaded_file = st.file_uploader("Choose an image file", type=["jpg", "jpeg", "png", "bmp"])
         
         if uploaded_file is not None:
             # Display the uploaded image
@@ -516,7 +496,7 @@ def main():
                         st.image(results['cv2_processed'], caption="Processed Image", use_column_width=True)
                     
                     # Display preprocessing visualization if enabled
-                    if st.session_state.show_preprocessing:
+                    if show_preprocessing:
                         st.markdown("<div class='sub-header'>Preprocessing Steps</div>", unsafe_allow_html=True)
                         st.pyplot(results['preprocessing_viz'])
                     
@@ -533,17 +513,16 @@ def main():
                         st.markdown("<div class='card'><h3>Refined Result</h3></div>", unsafe_allow_html=True)
                         st.markdown(f"<div class='info-box'>{results['refined_prediction']}</div>", unsafe_allow_html=True)
                     
-                    # Display confidence visualization if enabled and available
-                    if st.session_state.show_confidence and 'confidence_viz' in results:
+                    # Display confidence visualization if enabled
+                    if show_confidence:
                         st.markdown("<div class='sub-header'>Confidence Assessment</div>", unsafe_allow_html=True)
                         st.pyplot(results['confidence_viz'])
     
     with tab2:
-        st.markdown("<div class='info-box'>Take a photo with your camera for immediate OCR processing.</div>", unsafe_allow_html=True)
+        st.markdown("<div class='info-box'>Take a photo with your camera to process immediately.</div>", unsafe_allow_html=True)
         camera_image = st.camera_input("Take a photo")
         
         if camera_image is not None:
-            # Process button
             if st.button("Process Photo", key="process_camera"):
                 with st.spinner("Processing..."):
                     # Process the camera image
@@ -564,16 +543,16 @@ def main():
                         st.markdown(f"<div class='info-box'>{results['refined_prediction']}</div>", unsafe_allow_html=True)
     
     with tab3:
-        st.markdown("<div class='warning-box'>Batch processing allows you to process multiple images at once and export results to CSV.</div>", unsafe_allow_html=True)
+        st.markdown("<div class='warning-box'>Batch process multiple images and export results.</div>", unsafe_allow_html=True)
         
         uploaded_files = st.file_uploader("Upload multiple images", type=["jpg", "jpeg", "png", "bmp"], accept_multiple_files=True)
         
         if uploaded_files:
             st.write(f"Uploaded {len(uploaded_files)} files")
             
-            # Display thumbnails of uploaded images
+            # Display thumbnails
             columns = st.columns(4)
-            for i, uploaded_file in enumerate(uploaded_files[:8]):  # Show first 8 images
+            for i, uploaded_file in enumerate(uploaded_files[:8]):
                 with columns[i % 4]:
                     st.image(Image.open(uploaded_file), width=100)
             
@@ -623,7 +602,7 @@ def main():
                         key="download-csv"
                     )
     
-    # Add info section
+    # About section
     with st.expander("About this OCR System"):
         st.markdown("""
         ## Enhanced OCR System

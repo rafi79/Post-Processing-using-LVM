@@ -1,3 +1,18 @@
+"""
+Advanced OCR System with PyTorch Compatibility Fix
+
+This version maintains all original features while fixing the PyTorch-Streamlit
+compatibility issues.
+"""
+import os
+import sys
+
+# CRITICAL: Set environment variables to fix compatibility issues
+os.environ["STREAMLIT_SERVER_WATCH_FILES"] = "false"
+os.environ["STREAMLIT_SERVER_HEADLESS"] = "true"
+os.environ["TORCH_USE_RTLD_GLOBAL"] = "YES"  # Helps with PyTorch loading issues
+
+# First, import regular packages
 import streamlit as st
 import numpy as np
 from PIL import Image, ImageDraw
@@ -8,8 +23,8 @@ from difflib import SequenceMatcher
 import matplotlib.pyplot as plt
 import io
 import traceback
-import os
-import sys
+import base64
+from datetime import datetime
 
 # Set page configuration
 st.set_page_config(
@@ -127,119 +142,40 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# Check dependencies and load them safely
-def load_dependencies():
-    """Load necessary dependencies with error handling"""
-    dependencies = {}
-    missing_deps = []
-    
-    # Try to import OpenCV
+# Flag to determine if PyTorch imports worked
+PYTORCH_AVAILABLE = False
+TRANSFORMERS_AVAILABLE = False
+CV2_AVAILABLE = False
+
+# Try to import OpenCV
+try:
+    import cv2
+    CV2_AVAILABLE = True
+except ImportError:
+    st.warning("OpenCV (cv2) not found. Installing a compatible version...")
     try:
+        # Try to install with pip
+        import subprocess
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "opencv-python-headless==4.7.0.72"])
         import cv2
-        dependencies['cv2'] = cv2
-    except ImportError:
-        missing_deps.append("OpenCV (cv2)")
-        # Create a placeholder for cv2 with basic functions
+        CV2_AVAILABLE = True
+        st.success("OpenCV installed successfully!")
+    except Exception as e:
+        st.error(f"Failed to install OpenCV: {e}")
         from PIL import ImageFilter, ImageEnhance
-        
-        class CV2Placeholder:
-            @staticmethod
-            def cvtColor(img, code):
-                return np.array(img.convert('L'))
-            
-            @staticmethod
-            def adaptiveThreshold(*args, **kwargs):
-                # Return grayscale array
-                if isinstance(args[0], np.ndarray):
-                    return args[0]
-                return np.array(args[0])
-            
-            @staticmethod
-            def GaussianBlur(img, kernel, sigma):
-                if isinstance(img, np.ndarray):
-                    pil_img = Image.fromarray(img)
-                else:
-                    pil_img = img
-                return np.array(pil_img.filter(ImageFilter.GaussianBlur(radius=2)))
-            
-            @staticmethod
-            def addWeighted(img1, alpha, img2, beta, gamma):
-                # Simple implementation
-                return img1
-            
-            @staticmethod
-            def filter2D(img, ddepth, kernel):
-                if isinstance(img, np.ndarray):
-                    pil_img = Image.fromarray(img)
-                else:
-                    pil_img = img
-                enhancer = ImageEnhance.Sharpness(pil_img)
-                return np.array(enhancer.enhance(2.0))
-            
-            @staticmethod
-            def fastNlMeansDenoising(img, h=None, templateWindowSize=None, searchWindowSize=None):
-                # Just return the original image as we can't do proper denoising
-                return img
-            
-            # Constants for color conversion
-            COLOR_RGB2BGR = 0
-            COLOR_BGR2GRAY = 1
-            ADAPTIVE_THRESH_GAUSSIAN_C = 0
-            THRESH_BINARY = 1
-        
-        dependencies['cv2'] = CV2Placeholder()
-    
-    # Try to import PyTorch
-    try:
-        import torch
-        from torch.cuda.amp import autocast
-        dependencies['torch'] = torch
-        dependencies['autocast'] = autocast
-    except ImportError:
-        missing_deps.append("PyTorch (torch)")
-        
-        # Create placeholder classes for torch
-        class TorchPlaceholder:
-            def __init__(self):
-                self.cuda = self.CudaPlaceholder()
-                self.no_grad = self.NoGradPlaceholder
-                self.device = self.DevicePlaceholder
-                self.float32 = 'float32'
-                self.bfloat16 = 'bfloat16'
-            
-            def device(self, device_str):
-                return self.DevicePlaceholder()
-            
-            class CudaPlaceholder:
-                @staticmethod
-                def is_available():
-                    return False
-            
-            class DevicePlaceholder:
-                def __init__(self):
-                    self.type = 'cpu'
-            
-            class NoGradPlaceholder:
-                def __enter__(self):
-                    pass
-                
-                def __exit__(self, exc_type, exc_val, exc_tb):
-                    pass
-        
-        class AutocastPlaceholder:
-            def __init__(self, enabled=False):
-                self.enabled = enabled
-            
-            def __enter__(self):
-                pass
-            
-            def __exit__(self, exc_type, exc_val, exc_tb):
-                pass
-        
-        dependencies['torch'] = TorchPlaceholder()
-        dependencies['autocast'] = AutocastPlaceholder
-    
-    # Try to import transformers
+
+# Now try to import PyTorch safely
+try:
+    import torch
+    from torch.cuda.amp import autocast
+    PYTORCH_AVAILABLE = True
+except ImportError:
+    st.warning("PyTorch not found. Some advanced OCR features will be disabled.")
+except Exception as e:
+    st.warning(f"Error importing PyTorch: {e}. Some advanced OCR features will be disabled.")
+
+# Try to import transformers safely
+if PYTORCH_AVAILABLE:
     try:
         from transformers import (
             TrOCRProcessor,
@@ -248,90 +184,11 @@ def load_dependencies():
             AutoModelForVision2Seq,
             AutoTokenizer
         )
-        dependencies['TrOCRProcessor'] = TrOCRProcessor
-        dependencies['VisionEncoderDecoderModel'] = VisionEncoderDecoderModel
-        dependencies['AutoProcessor'] = AutoProcessor
-        dependencies['AutoModelForVision2Seq'] = AutoModelForVision2Seq
-        dependencies['AutoTokenizer'] = AutoTokenizer
+        TRANSFORMERS_AVAILABLE = True
     except ImportError:
-        missing_deps.append("Transformers")
-        
-        # Create placeholder classes
-        class ProcessorPlaceholder:
-            def __init__(self):
-                self.tokenizer = self.TokenizerPlaceholder()
-            
-            def __call__(self, images=None, text=None, return_tensors=None, padding=None, truncation=None, max_length=None):
-                return self.ResultPlaceholder()
-            
-            def batch_decode(self, ids, skip_special_tokens=True):
-                return ["[Placeholder OCR text - transformers package not installed]"]
-            
-            class TokenizerPlaceholder:
-                def __init__(self):
-                    self.cls_token_id = 0
-                    self.pad_token_id = 0
-                    self.eos_token = "[EOS]"
-                
-                def decode(self, output, skip_special_tokens=True):
-                    return "[Placeholder OCR text - transformers package not installed]"
-            
-            class ResultPlaceholder:
-                def __init__(self):
-                    self.pixel_values = np.zeros((1, 3, 224, 224))
-                
-                def to(self, device):
-                    return self
-        
-        class ModelPlaceholder:
-            def __init__(self):
-                self.config = self.ConfigPlaceholder()
-            
-            def to(self, device):
-                return self
-            
-            def generate(self, pixel_values=None, **kwargs):
-                return [0]
-            
-            class ConfigPlaceholder:
-                def __init__(self):
-                    self.decoder = self.DecoderPlaceholder()
-                    self.decoder_start_token_id = 0
-                    self.pad_token_id = 0
-                    self.vocab_size = 1000
-                    self.max_length = 64
-                    self.early_stopping = True
-                    self.no_repeat_ngram_size = 3
-                    self.length_penalty = 2.0
-                    self.num_beams = 4
-                
-                class DecoderPlaceholder:
-                    def __init__(self):
-                        self.vocab_size = 1000
-        
-        dependencies['TrOCRProcessor'] = ProcessorPlaceholder
-        dependencies['VisionEncoderDecoderModel'] = ModelPlaceholder
-        dependencies['AutoProcessor'] = ProcessorPlaceholder
-        dependencies['AutoModelForVision2Seq'] = ModelPlaceholder
-        dependencies['AutoTokenizer'] = ProcessorPlaceholder().TokenizerPlaceholder
-    
-    # Report missing dependencies
-    if missing_deps:
-        st.warning(f"⚠️ The following dependencies could not be loaded and are using placeholders with limited functionality: {', '.join(missing_deps)}")
-        st.info("💡 See the 'Installation' section for instructions on how to install all dependencies.")
-    
-    return dependencies
-
-# Load dependencies
-deps = load_dependencies()
-cv2 = deps.get('cv2')
-torch = deps.get('torch')
-autocast = deps.get('autocast')
-TrOCRProcessor = deps.get('TrOCRProcessor')
-VisionEncoderDecoderModel = deps.get('VisionEncoderDecoderModel')
-AutoProcessor = deps.get('AutoProcessor')
-AutoModelForVision2Seq = deps.get('AutoModelForVision2Seq')
-AutoTokenizer = deps.get('AutoTokenizer')
+        st.warning("Transformers library not found. Advanced OCR models will be disabled.")
+    except Exception as e:
+        st.warning(f"Error importing Transformers: {e}. Advanced OCR models will be disabled.")
 
 # Helper functions for image processing
 def add_logo_to_sidebar():
@@ -344,6 +201,19 @@ def add_logo_to_sidebar():
 
 def preprocess_image(image):
     """Apply advanced preprocessing techniques to the image"""
+    if not CV2_AVAILABLE:
+        # Simple preprocessing with PIL
+        if image.mode != 'L':
+            image = image.convert('L')
+        # Enhance contrast
+        enhancer = ImageEnhance.Contrast(image)
+        enhanced = enhancer.enhance(2.0)
+        # Sharpen
+        sharpened = enhanced.filter(ImageFilter.SHARPEN)
+        # Return both PIL image and numpy array
+        return sharpened, np.array(sharpened)
+    
+    # OpenCV preprocessing
     try:
         # Convert to CV2 format
         image_cv2 = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
@@ -413,6 +283,12 @@ def create_preprocessing_visualization(original_img, processed_img):
     """Create visualization of preprocessing steps"""
     fig, axes = plt.subplots(1, 2, figsize=(12, 6))
     
+    # Make sure inputs are numpy arrays
+    if not isinstance(original_img, np.ndarray):
+        original_img = np.array(original_img)
+    if not isinstance(processed_img, np.ndarray):
+        processed_img = np.array(processed_img)
+    
     # Original image
     axes[0].imshow(original_img, cmap='gray')
     axes[0].set_title("Original Image")
@@ -460,9 +336,13 @@ def display_confidence_visualization(similarity):
     fig.tight_layout()
     return fig
 
+# Create safe model loading functions that use global variables
 @st.cache_resource
 def load_trocr_model():
     """Load and cache TrOCR model to avoid reloading"""
+    if not TRANSFORMERS_AVAILABLE or not PYTORCH_AVAILABLE:
+        return None, None
+    
     try:
         processor = TrOCRProcessor.from_pretrained("microsoft/trocr-large-printed")
         model = VisionEncoderDecoderModel.from_pretrained("microsoft/trocr-large-printed")
@@ -485,6 +365,9 @@ def load_trocr_model():
 @st.cache_resource
 def load_pali_model(hf_token):
     """Load and cache PaLI-Gemma model to avoid reloading"""
+    if not TRANSFORMERS_AVAILABLE or not PYTORCH_AVAILABLE:
+        return None, None, None
+    
     if not hf_token:
         return None, None, None
     
@@ -505,6 +388,32 @@ def load_pali_model(hf_token):
         st.error(f"Error loading PaLI-Gemma model: {e}")
         return None, None, None
 
+# Function to try tesseract if PyTorch models fail
+def process_with_tesseract(image):
+    """Fallback to Tesseract OCR if available"""
+    try:
+        import pytesseract
+        text = pytesseract.image_to_string(image)
+        return text
+    except ImportError:
+        return "pytesseract not installed. Install with: pip install pytesseract"
+    except Exception as e:
+        return f"Error using Tesseract: {e}"
+
+# Function to try EasyOCR if PyTorch models fail
+def process_with_easyocr(image):
+    """Fallback to EasyOCR if available"""
+    try:
+        import easyocr
+        reader = easyocr.Reader(['en'])
+        results = reader.readtext(np.array(image))
+        text = " ".join([result[1] for result in results])
+        return text
+    except ImportError:
+        return "easyocr not installed. Install with: pip install easyocr"
+    except Exception as e:
+        return f"Error using EasyOCR: {e}"
+
 class OCRSystem:
     def __init__(self, hf_token=None):
         """Initialize the OCR system"""
@@ -512,7 +421,11 @@ class OCRSystem:
         self.progress_placeholder = st.empty()
         
         # Initialize device
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        if PYTORCH_AVAILABLE:
+            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        else:
+            self.device = "cpu"
+            
         self.hf_token = hf_token
         
         # Initialize model flags
@@ -528,6 +441,10 @@ class OCRSystem:
     
     def init_trocr(self):
         """Initialize TrOCR model with improved error handling"""
+        if not PYTORCH_AVAILABLE or not TRANSFORMERS_AVAILABLE:
+            st.warning("PyTorch or Transformers not available. Cannot initialize TrOCR.")
+            return
+            
         with self.progress_placeholder.container():
             st.info("Loading TrOCR model... This might take a moment.")
             progress_bar = st.progress(0)
@@ -550,20 +467,25 @@ class OCRSystem:
                 except Exception as e:
                     st.error(f"Error moving TrOCR model to device: {e}")
                     # Fallback to CPU
-                    self.device = torch.device("cpu")
-                    try:
-                        self.trocr_model.to(self.device)
-                        self.trocr_initialized = True
-                        st.session_state.trocr_initialized = True
-                        st.success("TrOCR model loaded successfully (using CPU)!")
-                    except Exception as e2:
-                        st.error(f"Could not initialize TrOCR model: {e2}")
+                    if PYTORCH_AVAILABLE:
+                        self.device = torch.device("cpu")
+                        try:
+                            self.trocr_model.to(self.device)
+                            self.trocr_initialized = True
+                            st.session_state.trocr_initialized = True
+                            st.success("TrOCR model loaded successfully (using CPU)!")
+                        except Exception as e2:
+                            st.error(f"Could not initialize TrOCR model: {e2}")
             else:
                 st.error("Failed to load TrOCR model. OCR functionality will be limited.")
                 self.trocr_initialized = False
     
     def init_pali(self):
         """Initialize PaLI-Gemma model with improved error handling"""
+        if not PYTORCH_AVAILABLE or not TRANSFORMERS_AVAILABLE:
+            st.warning("PyTorch or Transformers not available. Cannot initialize PaLI-Gemma.")
+            return
+            
         if not self.hf_token:
             st.warning("No Hugging Face token provided. Skipping PaLI-Gemma initialization.")
             return
@@ -600,93 +522,127 @@ class OCRSystem:
             results['cv2_processed'] = cv2_processed
             
             # Create visualization of preprocessing
-            results['preprocessing_viz'] = create_preprocessing_visualization(np.array(image), cv2_processed)
+            results['preprocessing_viz'] = create_preprocessing_visualization(np.array(image.convert('L')), cv2_processed)
             
-            # Initialize TrOCR if needed
-            if not self.trocr_initialized:
-                with self.progress_placeholder.container():
-                    self.init_trocr()
-            
-            # Initial TrOCR prediction
-            with self.progress_placeholder.container():
-                st.info("Performing OCR analysis...")
-                progress_bar = st.progress(0)
-                
-                # Simulated processing time
-                for i in range(100):
-                    progress_bar.progress(i + 1)
-                    time.sleep(0.01)
-                
-                # Check if model initialized successfully
+            # Check if we can use advanced OCR models
+            if PYTORCH_AVAILABLE and TRANSFORMERS_AVAILABLE:
+                # Initialize TrOCR if needed
                 if not self.trocr_initialized:
-                    st.warning("TrOCR model not available. Using placeholder text.")
-                    results['initial_prediction'] = "OCR model not loaded properly. Please check installation."
-                else:
-                    try:
-                        pixel_values = self.trocr_processor(images=processed_image, return_tensors="pt").pixel_values.to(self.device)
-                        
-                        with torch.no_grad(), autocast(enabled=self.device.type == 'cuda'):
-                            generated_ids = self.trocr_model.generate(pixel_values)
-                            initial_pred = self.trocr_processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
-                        
-                        results['initial_prediction'] = initial_pred
-                        st.success("OCR analysis complete!")
-                    except Exception as e:
-                        error_details = traceback.format_exc()
-                        st.error(f"Error during OCR analysis: {e}")
-                        st.info("Switching to failsafe mode...")
-                        # Failsafe mode - try again with simpler preprocessing
-                        try:
-                            # Convert to grayscale with simpler method
-                            gray_img = image.convert('L')
-                            # Try with simpler input
-                            pixel_values = self.trocr_processor(images=gray_img, return_tensors="pt").pixel_values.to(self.device)
-                            with torch.no_grad():
-                                generated_ids = self.trocr_model.generate(pixel_values)
-                                initial_pred = self.trocr_processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
-                            results['initial_prediction'] = initial_pred
-                            st.success("OCR analysis completed in failsafe mode!")
-                        except Exception as e2:
-                            results['initial_prediction'] = "Error during analysis. Try with a clearer image."
-                            st.error(f"OCR analysis failed: {e2}")
-                            # Log detailed error for debugging
-                            st.expander("Technical Error Details").code(error_details)
-                            return results
-            
-            # Refined prediction with PaLI-Gemma (if initialized)
-            if not self.pali_initialized and self.hf_token:
-                # Try to initialize PaLI
-                self.init_pali()
+                    with self.progress_placeholder.container():
+                        self.init_trocr()
                 
-            if self.pali_initialized:
+                # Initial TrOCR prediction
                 with self.progress_placeholder.container():
-                    st.info("Refining OCR results using PaLI-Gemma...")
+                    st.info("Performing OCR analysis...")
                     progress_bar = st.progress(0)
                     
                     # Simulated processing time
                     for i in range(100):
                         progress_bar.progress(i + 1)
-                        time.sleep(0.02)
+                        time.sleep(0.01)
                     
-                    try:
-                        refined_pred = self.refine_prediction(processed_image, results['initial_prediction'])
-                        results['refined_prediction'] = refined_pred
+                    # Check if model initialized successfully
+                    if not self.trocr_initialized:
+                        st.warning("TrOCR model not available. Trying alternative OCR methods.")
                         
-                        # Calculate similarity for confidence visualization
-                        similarity = SequenceMatcher(None, 
-                                                   normalize_text(results['initial_prediction']), 
-                                                   normalize_text(refined_pred)).ratio()
-                        results['confidence_viz'] = display_confidence_visualization(similarity)
-                        results['confidence_score'] = similarity
+                        # Try Tesseract first
+                        tesseract_result = process_with_tesseract(processed_image)
+                        if not tesseract_result.startswith("Error") and not tesseract_result.startswith("pytesseract not installed"):
+                            results['initial_prediction'] = tesseract_result
+                            st.success("OCR analysis completed with Tesseract!")
+                        else:
+                            # Try EasyOCR next
+                            easyocr_result = process_with_easyocr(processed_image)
+                            if not easyocr_result.startswith("Error") and not easyocr_result.startswith("easyocr not installed"):
+                                results['initial_prediction'] = easyocr_result
+                                st.success("OCR analysis completed with EasyOCR!")
+                            else:
+                                results['initial_prediction'] = "Could not perform OCR. Please install either Tesseract or EasyOCR."
+                    else:
+                        try:
+                            pixel_values = self.trocr_processor(images=processed_image, return_tensors="pt").pixel_values.to(self.device)
+                            
+                            with torch.no_grad(), autocast(enabled=self.device.type == 'cuda'):
+                                generated_ids = self.trocr_model.generate(pixel_values)
+                                initial_pred = self.trocr_processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
+                            
+                            results['initial_prediction'] = initial_pred
+                            st.success("OCR analysis complete!")
+                        except Exception as e:
+                            error_details = traceback.format_exc()
+                            st.error(f"Error during OCR analysis: {e}")
+                            st.info("Trying alternative OCR methods...")
+                            
+                            # Try Tesseract as a fallback
+                            tesseract_result = process_with_tesseract(processed_image)
+                            if not tesseract_result.startswith("Error") and not tesseract_result.startswith("pytesseract not installed"):
+                                results['initial_prediction'] = tesseract_result
+                                st.success("OCR analysis completed with Tesseract!")
+                            else:
+                                # Try EasyOCR as another fallback
+                                easyocr_result = process_with_easyocr(processed_image)
+                                if not easyocr_result.startswith("Error") and not easyocr_result.startswith("easyocr not installed"):
+                                    results['initial_prediction'] = easyocr_result
+                                    st.success("OCR analysis completed with EasyOCR!")
+                                else:
+                                    results['initial_prediction'] = "Failed to perform OCR. Please check the installation."
+                                    st.error("All OCR methods failed.")
+                                    st.expander("Technical Error Details").code(error_details)
+                
+                # Refined prediction with PaLI-Gemma (if initialized)
+                if not self.pali_initialized and self.hf_token:
+                    # Try to initialize PaLI
+                    self.init_pali()
+                    
+                if self.pali_initialized:
+                    with self.progress_placeholder.container():
+                        st.info("Refining OCR results using PaLI-Gemma...")
+                        progress_bar = st.progress(0)
                         
-                        st.success("Refinement complete!")
-                    except Exception as e:
-                        error_details = traceback.format_exc()
-                        st.error(f"Error during refinement: {e}")
-                        st.expander("Technical Error Details").code(error_details)
-                        results['refined_prediction'] = results['initial_prediction']  # Fallback to initial prediction
+                        # Simulated processing time
+                        for i in range(100):
+                            progress_bar.progress(i + 1)
+                            time.sleep(0.02)
+                        
+                        try:
+                            refined_pred = self.refine_prediction(processed_image, results['initial_prediction'])
+                            results['refined_prediction'] = refined_pred
+                            
+                            # Calculate similarity for confidence visualization
+                            similarity = SequenceMatcher(None, 
+                                                       normalize_text(results['initial_prediction']), 
+                                                       normalize_text(refined_pred)).ratio()
+                            results['confidence_viz'] = display_confidence_visualization(similarity)
+                            results['confidence_score'] = similarity
+                            
+                            st.success("Refinement complete!")
+                        except Exception as e:
+                            error_details = traceback.format_exc()
+                            st.error(f"Error during refinement: {e}")
+                            st.expander("Technical Error Details").code(error_details)
+                            results['refined_prediction'] = results['initial_prediction']  # Fallback to initial prediction
+                else:
+                    results['refined_prediction'] = results['initial_prediction']  # No refinement available
             else:
-                results['refined_prediction'] = results['initial_prediction']  # No refinement available
+                # Use alternative OCR methods if PyTorch is not available
+                st.info("Advanced OCR models not available. Using alternative OCR methods.")
+                
+                # Try Tesseract first
+                tesseract_result = process_with_tesseract(processed_image)
+                if not tesseract_result.startswith("Error") and not tesseract_result.startswith("pytesseract not installed"):
+                    results['initial_prediction'] = tesseract_result
+                    st.success("OCR analysis completed with Tesseract!")
+                else:
+                    # Try EasyOCR next
+                    easyocr_result = process_with_easyocr(processed_image)
+                    if not easyocr_result.startswith("Error") and not easyocr_result.startswith("easyocr not installed"):
+                        results['initial_prediction'] = easyocr_result
+                        st.success("OCR analysis completed with EasyOCR!")
+                    else:
+                        results['initial_prediction'] = "Could not perform OCR. Please install either Tesseract or EasyOCR."
+                
+                # No refinement available
+                results['refined_prediction'] = results.get('initial_prediction', "OCR failed")
                 
         except Exception as e:
             error_details = traceback.format_exc()
@@ -702,6 +658,9 @@ class OCRSystem:
     
     def refine_prediction(self, image, initial_pred):
         """Refine the prediction using PaLI-Gemma with proper token formatting and error handling"""
+        if not PYTORCH_AVAILABLE or not TRANSFORMERS_AVAILABLE:
+            return initial_pred
+            
         try:
             # Explicitly add the <image> token to the beginning of the prompt
             prompt = f"<image> OCR correction task: The text in this image appears to be '{initial_pred}'. What is the correct text?"
@@ -753,14 +712,6 @@ class OCRSystem:
             st.error(f"Refinement failed: {e}")
             return initial_pred
 
-def load_demo_image():
-    """Load a demo image for testing"""
-    # Create a simple demo image with text
-    demo_img = Image.new('RGB', (400, 100), color = (73, 109, 137))
-    d = ImageDraw.Draw(demo_img)
-    d.text((10,10), "Sample Text for OCR Demo", fill=(255,255,0))
-    return demo_img
-
 def main():
     # Add logo to sidebar
     add_logo_to_sidebar()
@@ -779,8 +730,9 @@ def main():
                                         help="Token for accessing Hugging Face models. Required for PaLI-Gemma refinement.")
         
         use_pali = st.sidebar.checkbox("Use PaLI-Gemma for refinement", 
-                                       value=True,
-                                       help="Enable to use PaLI-Gemma model for refining OCR results. Requires a Hugging Face token.")
+                                       value=True if TRANSFORMERS_AVAILABLE and PYTORCH_AVAILABLE else False,
+                                       help="Enable to use PaLI-Gemma model for refining OCR results. Requires a Hugging Face token.",
+                                       disabled=not (TRANSFORMERS_AVAILABLE and PYTORCH_AVAILABLE))
         
         # Create OCR system
         st.session_state.ocr_system = OCRSystem(hf_token if use_pali else None)
@@ -795,6 +747,27 @@ def main():
         # Clear session state
         st.session_state.pop('ocr_system', None)
         st.experimental_rerun()
+    
+    # Show dependency status
+    with st.sidebar.expander("System Status"):
+        st.write("OpenCV: ", "✅ Available" if CV2_AVAILABLE else "❌ Not available")
+        st.write("PyTorch: ", "✅ Available" if PYTORCH_AVAILABLE else "❌ Not available")
+        st.write("Transformers: ", "✅ Available" if TRANSFORMERS_AVAILABLE else "❌ Not available")
+        
+        # Check for Tesseract
+        try:
+            import pytesseract
+            tesseract_version = pytesseract.get_tesseract_version()
+            st.write(f"Tesseract: ✅ Available (v{tesseract_version})")
+        except:
+            st.write("Tesseract: ❌ Not available")
+            
+        # Check for EasyOCR
+        try:
+            import easyocr
+            st.write("EasyOCR: ✅ Available")
+        except:
+            st.write("EasyOCR: ❌ Not available")
     
     # Input options
     st.markdown("<div class='sub-header'>Image Input</div>", unsafe_allow_html=True)
@@ -813,7 +786,7 @@ def main():
                 col1, col2 = st.columns(2)
                 with col1:
                     st.markdown("<div class='card'><h3>Original Image</h3></div>", unsafe_allow_html=True)
-                    st.image(image, caption="Uploaded Image", use_column_width=True)
+                    st.image(image, use_container_width=True, caption="Uploaded Image")
                 
                 # Process button
                 if st.button("Process Image", key="process_single"):
@@ -824,7 +797,7 @@ def main():
                         # Display processed image
                         with col2:
                             st.markdown("<div class='card'><h3>Processed Image</h3></div>", unsafe_allow_html=True)
-                            st.image(results['cv2_processed'], caption="Processed Image", use_column_width=True)
+                            st.image(results['cv2_processed'], use_container_width=True, caption="Processed Image")
                         
                         # Display preprocessing visualization if enabled
                         if st.session_state.show_preprocessing and 'preprocessing_viz' in results:
@@ -848,6 +821,16 @@ def main():
                         if st.session_state.show_confidence and 'confidence_viz' in results:
                             st.markdown("<div class='sub-header'>Confidence Assessment</div>", unsafe_allow_html=True)
                             st.pyplot(results['confidence_viz'])
+                            
+                        # Download button for the text
+                        text_result = results.get('refined_prediction', results.get('initial_prediction', ''))
+                        if text_result:
+                            st.download_button(
+                                "Download as Text File",
+                                text_result,
+                                f"ocr_result_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
+                                "text/plain"
+                            )
             except Exception as e:
                 st.error(f"Error processing the uploaded image: {e}")
                 st.info("Make sure the uploaded file is a valid image format.")
@@ -882,6 +865,16 @@ def main():
                         if st.session_state.show_confidence and 'confidence_viz' in results:
                             st.markdown("<div class='sub-header'>Confidence Assessment</div>", unsafe_allow_html=True)
                             st.pyplot(results['confidence_viz'])
+                            
+                        # Download button for the text
+                        text_result = results.get('refined_prediction', results.get('initial_prediction', ''))
+                        if text_result:
+                            st.download_button(
+                                "Download as Text File",
+                                text_result,
+                                f"ocr_result_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
+                                "text/plain"
+                            )
             except Exception as e:
                 st.error(f"Error processing the camera image: {e}")
     
@@ -953,18 +946,15 @@ def main():
                         if failed > 0:
                             st.warning(f"{failed} out of {len(uploaded_files)} images failed to process.")
                         
-                        # Color the DataFrame rows based on status
-                        def highlight_row(row):
-                            return ['background-color: #ffcccc' if row['status'] == 'failed' else '' for _ in row]
-                        
-                        st.dataframe(df.style.apply(highlight_row, axis=1))
+                        # Display the DataFrame
+                        st.dataframe(df)
                         
                         # Download button for CSV
                         csv = df.to_csv(index=False).encode('utf-8')
                         st.download_button(
                             "Download CSV Results",
                             csv,
-                            "ocr_results.csv",
+                            f"ocr_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
                             "text/csv",
                             key="download-csv"
                         )
@@ -980,6 +970,7 @@ def main():
         
         1. **TrOCR**: Microsoft's Transformer-based OCR model, fine-tuned for text recognition
         2. **PaLI-Gemma**: Google's multimodal model that can understand both images and text for refinement
+        3. **Fallbacks**: Tesseract OCR and EasyOCR if the advanced models are not available
         
         ### Preprocessing Pipeline
         
@@ -1004,89 +995,77 @@ def main():
         
         This OCR system requires several dependencies. Follow these steps to install everything correctly:
         
-        ### Option 1: Using pip (Recommended)
+        ### Option 1: Using pip
         
         ```bash
         # Create and activate a virtual environment (recommended)
         python -m venv ocr_env
         source ocr_env/bin/activate  # On Windows: ocr_env\\Scripts\\activate
         
-        # Install required packages
+        # Update pip and install core dependencies
         pip install --upgrade pip
-        pip install streamlit>=1.24.0
+        pip install streamlit==1.24.0
         pip install pillow>=9.0.0
-        pip install opencv-python-headless>=4.7.0
-        pip install torch>=2.0.0
-        pip install transformers>=4.30.0
-        pip install numpy>=1.22.0
-        pip install pandas>=1.5.0
-        pip install matplotlib>=3.5.0
-        ```
-        
-        ### Option 2: Using Conda
-        
-        ```bash
-        # Create and activate a conda environment
-        conda create -n ocr_env python=3.9
-        conda activate ocr_env
-        
-        # Install required packages
-        conda install -c conda-forge streamlit pillow opencv matplotlib pandas numpy
-        conda install -c pytorch pytorch
+        pip install opencv-python-headless==4.7.0.72
+        pip install torch torchvision
         pip install transformers
+        pip install numpy pandas matplotlib
+        
+        # Optional fallback OCR engines
+        pip install pytesseract  # Also requires Tesseract installed on your system
+        pip install easyocr
         ```
         
-        ### Option 3: Using Docker
+        ### Option 2: Using the runner script
         
-        ```dockerfile
-        FROM python:3.9-slim
+        This application provides a special runner script that works around PyTorch-Streamlit compatibility issues:
         
-        WORKDIR /app
+        ```python
+        # Create a file named run_ocr.py with the following code:
+        import os
+        import sys
+
+        # Set environment variables to fix compatibility issues
+        os.environ["STREAMLIT_SERVER_WATCH_FILES"] = "false"
+        os.environ["STREAMLIT_SERVER_HEADLESS"] = "true"
+        os.environ["TORCH_USE_RTLD_GLOBAL"] = "YES"
+
+        # Import streamlit after setting environment variables
+        import streamlit.web.bootstrap as bootstrap
         
-        # Install system dependencies
-        RUN apt-get update && apt-get install -y \\
-            build-essential \\
-            libgl1-mesa-glx \\
-            libglib2.0-0 \\
-            && rm -rf /var/lib/apt/lists/*
-        
-        # Install Python dependencies
-        COPY requirements.txt .
-        RUN pip install --no-cache-dir -r requirements.txt
-        
-        # Copy application
-        COPY . .
-        
-        # Run Streamlit
-        CMD ["streamlit", "run", "app.py"]
+        # Run the app with file watcher disabled
+        bootstrap.run("advanced_ocr_app.py", "", [], flag_options={
+            'server.fileWatcherType': 'none',
+            'browser.serverAddress': 'localhost',
+            'server.headless': True,
+            'server.runOnSave': False
+        })
         ```
         
-        #### requirements.txt
-        ```
-        streamlit>=1.24.0
-        Pillow>=9.0.0
-        opencv-python-headless>=4.7.0
-        torch>=2.0.0
-        transformers>=4.30.0
-        numpy>=1.22.0
-        pandas>=1.5.0
-        matplotlib>=3.5.0
+        Then run the application with:
+        ```bash
+        python run_ocr.py
         ```
         
         ### Common Issues and Solutions
         
-        1. **Missing distutils**: If you encounter a "No module named 'distutils'" error, install Python development tools:
+        1. **PyTorch-Streamlit Compatibility**: If you encounter errors with PyTorch and Streamlit's file watcher, use the runner script above.
+        
+        2. **Missing 'distutils'**: If you see a "No module named 'distutils'" error, install Python development tools:
            ```bash
            sudo apt-get update
            sudo apt-get install python3-dev python3-distutils
            ```
         
-        2. **OpenCV installation issues**: If OpenCV installation fails, try using the headless version:
+        3. **OpenCV Issues**: If OpenCV installation fails, try the headless version:
            ```bash
-           pip install opencv-python-headless
+           pip install opencv-python-headless==4.7.0.72
            ```
         
-        3. **Dependency conflicts**: Use a clean virtual environment to avoid conflicts.
+        4. **CUDA Issues**: If you have GPU compatibility problems, install the CPU-only version of PyTorch:
+           ```bash
+           pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+           ```
         """)
     
     # Footer
